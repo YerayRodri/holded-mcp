@@ -16,6 +16,7 @@ from typing import Any
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 mcp = FastMCP("holded")
 
@@ -52,6 +53,31 @@ def _hf() -> dict:
 
 def _p(**kw) -> dict:
     return {k: v for k, v in kw.items() if v is not None}
+
+
+def _confirm(action: str, detail: str, confirmed: bool) -> dict | None:
+    """
+    Guarda para operaciones financieras irreversibles o de envío real.
+
+    Devuelve el aviso de confirmación si `confirmed` no es True (sin haber
+    hecho ninguna llamada a la API de Holded todavía). Devuelve None si
+    `confirmed=True` y se puede proceder. Mismo patrón que `_confirm()` en
+    google-ads-write-mcp/gmail-mcp — añadido 2026-08-30, ver docs/APIS.md:
+    hasta entonces ninguna operación de Holded tenía freno técnico propio.
+
+    Args:
+        action: descripción corta de la acción, para el aviso.
+        detail: datos concretos de la operación (importe, factura, destino...).
+        confirmed: el parámetro que pasa quien llama a la tool.
+    """
+    if confirmed:
+        return None
+    return {
+        "requires_confirmation": True,
+        "warning": f"Acción financiera: {action}. {detail}",
+        "instruction": "Muestra este aviso al usuario y pide confirmación explícita. "
+                       "Solo repite la llamada con confirmed=True si el usuario confirma.",
+    }
 
 
 def _raise(r: requests.Response) -> None:
@@ -157,7 +183,7 @@ def _account_balance(account_id: str) -> float:
 
 # ── FACTURAS EMITIDAS (VENTAS) ────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_invoices(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -175,13 +201,13 @@ def list_invoices(
                          contactId=contact_id, status=status, page=page)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def get_invoice(invoice_id: str) -> Any:
     """Detalle completo de una factura emitida."""
     return _get(f"/invoices/{invoice_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_invoice(
     contact_id: str,
     date: str,
@@ -218,42 +244,56 @@ def create_invoice(
     return _post("/invoices", body)
 
 
-@mcp.tool()
-def approve_invoice(invoice_id: str) -> Any:
-    """Aprueba (finaliza) un borrador de factura. Genera el número definitivo."""
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
+def approve_invoice(invoice_id: str, confirmed: bool = False) -> Any:
+    """Aprueba (finaliza) un borrador de factura. Genera el número definitivo. Requiere confirmed=True."""
+    aviso = _confirm("aprobar factura (genera número definitivo, irreversible)",
+                      f"invoice_id={invoice_id}", confirmed)
+    if aviso:
+        return aviso
     return _post(f"/invoices/{invoice_id}/approve")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 def send_invoice(
     invoice_id: str,
     emails: list[str],
     subject: str | None = None,
     message: str | None = None,
+    confirmed: bool = False,
 ) -> Any:
-    """Envía la factura por email al cliente. message: cuerpo del email."""
+    """Envía la factura por email al cliente. message: cuerpo del email. Requiere confirmed=True."""
+    aviso = _confirm("enviar factura por email",
+                      f"invoice_id={invoice_id}, destinatarios={emails}", confirmed)
+    if aviso:
+        return aviso
     return _post(f"/invoices/{invoice_id}/send",
                  _p(emails=emails, subject=subject, message=message))
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 def register_invoice_payment(
     invoice_id: str,
     amount: float,
     date: str,
     account_id: str | None = None,
     description: str | None = None,
+    confirmed: bool = False,
 ) -> Any:
     """
-    Registra un cobro en una factura emitida.
+    Registra un cobro en una factura emitida. Requiere confirmed=True.
     date: YYYY-MM-DD.
     account_id: ID de cuenta bancaria donde se recibe el cobro (treasury_id en la API).
     """
+    aviso = _confirm("registrar cobro de factura",
+                      f"invoice_id={invoice_id}, importe={amount}, fecha={date}", confirmed)
+    if aviso:
+        return aviso
     body = _p(amount=amount, date=date, treasury_id=account_id, description=description)
     return _post(f"/invoices/{invoice_id}/payments", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def get_invoice_pdf(invoice_id: str, save_path: str | None = None) -> Any:
     """
     Descarga el PDF de una factura emitida.
@@ -269,13 +309,13 @@ def get_invoice_pdf(invoice_id: str, save_path: str | None = None) -> Any:
     return {"pdf_base64": base64.b64encode(r.content).decode(), "size_bytes": len(r.content)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def attach_document_to_invoice(invoice_id: str, file_path: str) -> Any:
     """Adjunta un PDF u otro documento a una factura emitida. file_path: ruta local."""
     return _post_file(f"/invoices/{invoice_id}/attachments", file_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def update_invoice(
     invoice_id: str,
     contact_id: str | None = None,
@@ -313,7 +353,7 @@ def update_invoice(
 
 # ── FACTURAS RECIBIDAS (COMPRAS / GASTOS) ─────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_purchases(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -329,13 +369,13 @@ def list_purchases(
                          contactId=contact_id, status=status, page=page)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def get_purchase(purchase_id: str) -> Any:
     """Detalle completo de una factura de compra."""
     return _get(f"/purchases/{purchase_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_purchase(
     date: str,
     items: list[dict],
@@ -373,33 +413,39 @@ def create_purchase(
     return _post("/purchases", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 def register_purchase_payment(
     purchase_id: str,
     amount: float,
     date: str,
     account_id: str | None = None,
     description: str | None = None,
+    confirmed: bool = False,
 ) -> Any:
     """
-    Registra el pago de una factura de compra.
+    Registra el pago de una factura de compra. Requiere confirmed=True.
     date: YYYY-MM-DD.
     account_id: ID de cuenta bancaria desde donde se paga (treasury_id en la API).
     """
+    aviso = _confirm("registrar pago de una compra",
+                      f"purchase_id={purchase_id}, importe={amount}, fecha={date}", confirmed)
+    if aviso:
+        return aviso
     body = _p(amount=amount, date=date, treasury_id=account_id, description=description)
     return _post(f"/purchases/{purchase_id}/payments", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def attach_document_to_purchase(purchase_id: str, file_path: str) -> Any:
     """
     Adjunta un PDF a una factura de compra.
     file_path: ruta local al archivo.
+    Usado por los workflows n8n de 'Facturas Holded Yeray' y 'facturas desde drive'.
     """
     return _post_file(f"/purchases/{purchase_id}/attachments", file_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def update_purchase(
     purchase_id: str,
     contact_id: str | None = None,
@@ -435,7 +481,7 @@ def update_purchase(
 
 # ── PRESUPUESTOS ──────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_estimates(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -447,7 +493,7 @@ def list_estimates(
                          contactId=contact_id, status=status)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_estimate(
     contact_id: str,
     date: str,
@@ -467,7 +513,7 @@ def create_estimate(
     return _post("/estimates", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def update_estimate(
     estimate_id: str,
     contact_id: str | None = None,
@@ -498,16 +544,20 @@ def update_estimate(
     return _put(f"/estimates/{estimate_id}", {k: v for k, v in body.items() if v is not None})
 
 
-@mcp.tool()
-def convert_estimate_to_invoice(estimate_id: str) -> Any:
-    """Convierte un presupuesto aceptado en factura emitida."""
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
+def convert_estimate_to_invoice(estimate_id: str, confirmed: bool = False) -> Any:
+    """Convierte un presupuesto aceptado en factura emitida. Requiere confirmed=True."""
+    aviso = _confirm("convertir presupuesto en factura",
+                      f"estimate_id={estimate_id}", confirmed)
+    if aviso:
+        return aviso
     return _post("/documents/convert",
                  {"source_type": "estimate", "source_id": estimate_id, "target_type": "invoice"})
 
 
 # ── NOTAS DE ABONO / RECTIFICATIVAS ──────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_credit_notes(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -517,7 +567,7 @@ def list_credit_notes(
     return _get_filtered("/credit-notes", start_date, end_date, contactId=contact_id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_credit_note(
     contact_id: str,
     date: str,
@@ -535,7 +585,7 @@ def create_credit_note(
     return _post("/credit-notes", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def update_credit_note(
     credit_note_id: str,
     contact_id: str | None = None,
@@ -564,7 +614,7 @@ def update_credit_note(
 
 # ── TICKETS SIMPLIFICADOS ─────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_sales_receipts(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -573,7 +623,7 @@ def list_sales_receipts(
     return _get_filtered("/sales-receipts", start_date, end_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_sales_receipt(
     date: str,
     items: list[dict],
@@ -589,7 +639,7 @@ def create_sales_receipt(
     return _post("/sales-receipts", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def update_sales_receipt(
     receipt_id: str,
     date: str | None = None,
@@ -615,13 +665,13 @@ def update_sales_receipt(
 
 # ── FACTURAS RECURRENTES ──────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_recurring_invoices() -> Any:
     """Lista plantillas de facturas recurrentes activas."""
     return _get("/recurring-invoices")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_recurring_invoice(
     contact_id: str,
     items: list[dict],
@@ -643,7 +693,7 @@ def create_recurring_invoice(
 
 # ── CONTACTOS ─────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_contacts(
     search: str | None = None,
     contact_type: str | None = None,
@@ -657,13 +707,13 @@ def list_contacts(
     return _get("/contacts", name=search, type=contact_type, page=page)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def get_contact(contact_id: str) -> Any:
     """Datos completos de un contacto."""
     return _get(f"/contacts/{contact_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_contact(
     name: str,
     email: str | None = None,
@@ -694,7 +744,7 @@ def create_contact(
     return _post("/contacts", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def update_contact(
     contact_id: str,
     name: str | None = None,
@@ -755,13 +805,13 @@ def update_contact(
 
 # ── TESORERÍA ─────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_bank_accounts() -> Any:
     """Lista las cuentas bancarias con sus saldos actuales."""
     return _get("/treasury/accounts")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_bank_movements(
     account_id: str,
     start_date: str | None = None,
@@ -789,7 +839,7 @@ def list_bank_movements(
     return data
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_bank_movement(
     account_id: str,
     amount: float,
@@ -811,21 +861,27 @@ def create_bank_movement(
     return _post(f"/treasury/accounts/{account_id}/bank-movements", body)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 def reconcile_bank_movement(
     account_id: str,
     movement_id: str,
     document_id: str,
     document_type: str,
+    confirmed: bool = False,
 ) -> Any:
     """
-    Concilia un movimiento bancario con una factura o pago.
+    Concilia un movimiento bancario con una factura o pago. Requiere confirmed=True.
     document_type: invoice | salesreceipt | purchase | creditnote | purchaserefund |
                    payroll | payment | remittance | purchasereceipt | collection | receipt | entry.
     document_id: ID del documento a vincular con el movimiento.
     Nota: en la práctica solo "invoice" produce status "reconciled" con importe correcto.
     "purchase" produce "forced_reconciled" (la API lo acepta pero no enlaza el documento).
     """
+    aviso = _confirm("conciliar movimiento bancario",
+                      f"account_id={account_id}, movement_id={movement_id}, "
+                      f"document_id={document_id} ({document_type})", confirmed)
+    if aviso:
+        return aviso
     body = {"documents": [{"document_id": document_id, "document_type": document_type}]}
     return _post(
         f"/treasury/accounts/{account_id}/bank-movements/{movement_id}/reconcile",
@@ -835,7 +891,7 @@ def reconcile_bank_movement(
 
 # ── CASHFLOW / PREVISIÓN DE TESORERÍA ────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_cashflow_forecasts(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -845,7 +901,7 @@ def list_cashflow_forecasts(
                 start_date=start_date, end_date=end_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_cashflow_forecast(
     invoice_id: str,
     amount: float,
@@ -873,7 +929,7 @@ def create_cashflow_forecast(
 
 # ── REMESAS ───────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_remittances() -> Any:
     """Lista remesas de cobro SEPA."""
     return _get("/treasury/remittances")
@@ -881,7 +937,7 @@ def list_remittances() -> Any:
 
 # ── CONFIGURACIÓN ─────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_taxes() -> Any:
     """
     Lista los tipos de impuesto configurados: IVA (21%, 10%, 4%, 0%),
@@ -891,7 +947,7 @@ def list_taxes() -> Any:
     return _get("/taxes")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_services() -> Any:
     """
     Lista el catálogo de servicios de Holded.
@@ -900,7 +956,7 @@ def list_services() -> Any:
     return _get("/services")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_numbering_series(doc_type: str = "invoice") -> Any:
     """
     Lista las series de numeración configuradas.
@@ -913,7 +969,7 @@ def list_numbering_series(doc_type: str = "invoice") -> Any:
     return _get(f"/numbering-series/{doc_type}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_expense_accounts() -> Any:
     """
     Lista las cuentas de gasto del plan contable.

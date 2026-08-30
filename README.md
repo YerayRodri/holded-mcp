@@ -140,12 +140,46 @@ invoices, contacts, bank accounts and cashflow forecasting.
       "command": "/path/to/.venv/bin/python3",
       "args": ["/path/to/holded-mcp/server.py"],
       "env": {
-        "HOLDED_API_KEY": "<your Holded PAT>"
+        "HOLDED_API_KEY": "pat_xxxxx..."
       }
     }
   }
 }
 ```
+
+## Confirmation required for critical operations
+
+These tools require `confirmed=True`. Called without it, they return a JSON
+with `requires_confirmation: true` that the calling agent MUST show to the
+user and wait for a response before repeating the call with `confirmed=True`.
+They're financial operations tied to fiscal numbering, or ones that send
+something to a real recipient — often irreversible once executed.
+
+| Tool | What it does |
+|---|---|
+| `approve_invoice` | Finalize a draft invoice — assigns the definitive invoice number, irreversible |
+| `send_invoice` | Email the invoice to the client |
+| `register_invoice_payment` | Register a payment received on an invoice |
+| `register_purchase_payment` | Register a payment made on a purchase/expense |
+| `convert_estimate_to_invoice` | Convert an accepted estimate into an invoice |
+| `reconcile_bank_movement` | Reconcile a bank movement against an invoice/payment |
+
+```
+# 1. First call — no confirmed
+approve_invoice(invoice_id="abc123")
+# → returns requires_confirmation: true → show it to the user
+
+# 2. Second call — after the user confirms
+approve_invoice(invoice_id="abc123", confirmed=True)
+```
+
+## Security
+
+- Every tool carries MCP Tool Annotations (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`) describing its effect up front.
+- API failures are raised as exceptions and always surface as real MCP
+  protocol errors (`isError=true`) — no tool catches a Holded API error and
+  quietly turns it into a JSON payload that looks like a successful response.
 
 ## Notes and known API quirks
 
