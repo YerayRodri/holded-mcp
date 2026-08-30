@@ -177,6 +177,10 @@ approve_invoice(invoice_id="abc123", confirmed=True)
 
 `list_invoices`/`list_purchases`/`list_estimates`/`list_credit_notes`/`list_sales_receipts`/`list_bank_movements` no longer include each document's full line-item array (still available via `get_invoice`/`get_purchase`/etc.) — measured 76-81% smaller on real data. Without this, a multi-month `list_invoices` call could exceed a client's response size limit outright. `list_contacts` is trimmed to identity fields for the same reason.
 
+## Response size (part 2)
+
+`get_invoice_pdf` used to return the entire PDF as base64 when no `save_path` was given — measured 68,419 characters for a real invoice. It now saves to `~/Downloads/holded-mcp/` by default and returns just the path (measured: 105 characters, -99.8%), matching the pattern already used elsewhere in this repo family for binary content. Pass `as_base64=True` for the rare case where you actually need the bytes inline.
+
 ## Security
 
 - Every tool carries MCP Tool Annotations (`readOnlyHint`, `destructiveHint`,

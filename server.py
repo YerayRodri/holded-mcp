@@ -12,6 +12,7 @@ Límite: 25.000 llamadas/mes. Usar siempre filtros de fecha en listados.
 import base64
 import mimetypes
 import os
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -21,6 +22,7 @@ from mcp.types import ToolAnnotations
 mcp = FastMCP("holded")
 
 BASE = "https://api.holded.com/api/v2"
+DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "holded-mcp"
 
 # Mapa de frecuencia legible → código API de Holded
 _FREQ = {"daily": "d", "weekly": "w", "monthly": "m", "yearly": "y"}
@@ -307,19 +309,25 @@ def register_invoice_payment(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
-def get_invoice_pdf(invoice_id: str, save_path: str | None = None) -> Any:
+def get_invoice_pdf(invoice_id: str, save_path: str | None = None, as_base64: bool = False) -> Any:
     """
-    Descarga el PDF de una factura emitida.
-    save_path: si se especifica, guarda el archivo en esa ruta local.
-    Sin save_path, devuelve el contenido en base64.
+    Descarga el PDF de una factura emitida y lo guarda en disco.
+    save_path: ruta local donde guardar (por defecto ~/Downloads/holded-mcp/<invoice_id>.pdf).
+    as_base64: si True, devuelve el contenido en base64 en vez de guardarlo — evitar salvo que
+      haga falta de verdad incrustar el PDF (un PDF típico son decenas de miles de tokens).
     """
     r = requests.get(f"{BASE}/invoices/{invoice_id}/pdf", headers=_h(), timeout=30)
     r.raise_for_status()
-    if save_path:
-        with open(save_path, "wb") as f:
-            f.write(r.content)
-        return {"saved": save_path, "size_bytes": len(r.content)}
-    return {"pdf_base64": base64.b64encode(r.content).decode(), "size_bytes": len(r.content)}
+    # Recorte de coste — verificado 2026-08-30 (ver docs/APIS.md): antes, sin save_path, esto
+    # devolvía el PDF entero en base64 dentro de la respuesta de la tool — un vector directo de
+    # miles de tokens innecesarios. Mismo patrón ya probado en gmail-mcp (download_attachment/
+    # export_message_to_pdf): guardar en disco por defecto y devolver la ruta.
+    if as_base64:
+        return {"pdf_base64": base64.b64encode(r.content).decode(), "size_bytes": len(r.content)}
+    target = Path(save_path).expanduser() if save_path else DEFAULT_DOWNLOAD_DIR / f"{invoice_id}.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(r.content)
+    return {"saved": str(target), "size_bytes": len(r.content)}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
