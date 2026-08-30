@@ -122,6 +122,19 @@ def _get_filtered(path: str, start_date: str | None, end_date: str | None,
         all_items = [i for i in all_items if str(i.get(date_field, ""))[:10] >= start_date]
     if end_date:
         all_items = [i for i in all_items if str(i.get(date_field, ""))[:10] <= end_date]
+    # Recorte de coste — verificado en vivo 2026-08-30 (ver docs/APIS.md): en una respuesta real
+    # de list_invoices, el array `lines` (líneas de factura completas: producto, impuestos,
+    # cuenta contable, retención...) era el 81% de los bytes totales (47.991 de 59.057 caracteres
+    # para solo 19 facturas) — y con un rango de fechas algo más amplio la respuesta entera supera
+    # el límite de la tool y falla directamente. Holded API v2 no tiene un parámetro `fields=`
+    # (verificado con context7, no lo documenta), así que este es el único lever posible: quitar
+    # `lines` de la vista de LISTADO (queda en get_invoice/get_purchase/etc, que sí devuelven el
+    # documento completo). `.pop(..., None)` es un no-op para los recursos que no tienen `lines`
+    # (ej. movimientos bancarios), así que es seguro aplicarlo aquí para los 6 tools que pasan por
+    # esta función.
+    for i in all_items:
+        if isinstance(i, dict):
+            i.pop("lines", None)
     return {"items": all_items, "filtered_count": len(all_items)}
 
 
@@ -704,7 +717,23 @@ def list_contacts(
     search: busca por nombre, email o NIF.
     contact_type: client | supplier.
     """
-    return _get("/contacts", name=search, type=contact_type, page=page)
+    data = _get("/contacts", name=search, type=contact_type, page=page)
+    # Recorte de coste — verificado en vivo 2026-08-30 (ver docs/APIS.md): 50 contactos reales
+    # ocupaban 57.300 caracteres, casi todo bloques anidados vacíos o con valores a null
+    # (defaults de facturación, bill_address, client_record/supplier_record, social_networks,
+    # shipping_addresses/notes/contact_persons casi siempre []). Para identificar/buscar un
+    # contacto (lo que promete esta tool) basta con la identidad — el detalle completo sigue
+    # disponible en get_contact.
+    keep = (
+        "id", "name", "code", "trade_name", "vat_number", "email", "phone", "mobile",
+        "type", "is_person", "tags", "group_id",
+    )
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        data["items"] = [
+            {k: v for k, v in c.items() if k in keep} if isinstance(c, dict) else c
+            for c in data["items"]
+        ]
+    return data
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))

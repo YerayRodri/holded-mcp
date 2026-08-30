@@ -173,6 +173,10 @@ approve_invoice(invoice_id="abc123")
 approve_invoice(invoice_id="abc123", confirmed=True)
 ```
 
+## Response size
+
+`list_invoices`/`list_purchases`/`list_estimates`/`list_credit_notes`/`list_sales_receipts`/`list_bank_movements` no longer include each document's full line-item array (still available via `get_invoice`/`get_purchase`/etc.) — measured 76-81% smaller on real data. Without this, a multi-month `list_invoices` call could exceed a client's response size limit outright. `list_contacts` is trimmed to identity fields for the same reason.
+
 ## Security
 
 - Every tool carries MCP Tool Annotations (`readOnlyHint`, `destructiveHint`,
